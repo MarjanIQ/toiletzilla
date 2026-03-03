@@ -27,7 +27,8 @@ characterSprite.onerror = () => {
 
 const GAME_BASE_SPEED = 220;
 const SPAWN_BASE_MS = 1450;
-const PIPE_WIDTH = 88;
+const DESKTOP_PIPE_WIDTH = 88;
+const MOBILE_PIPE_WIDTH = 72;
 
 const state = {
   score: 0,
@@ -67,6 +68,25 @@ function updateHud() {
 
 function updateSpeed() {
   state.speed = Math.min(1 + state.score * 0.06, 4.8);
+}
+
+function isMobileCanvas() {
+  return state.width < 700;
+}
+
+function updatePlayerScale() {
+  if (isMobileCanvas()) {
+    state.player.hitWidth = 54;
+    state.player.hitHeight = 42;
+    state.player.spriteWidth = 96;
+    state.player.spriteHeight = 96;
+    return;
+  }
+
+  state.player.hitWidth = 82;
+  state.player.hitHeight = 62;
+  state.player.spriteWidth = 150;
+  state.player.spriteHeight = 150;
 }
 
 function playerBounds() {
@@ -121,13 +141,16 @@ function makeCandleMeta() {
 }
 
 function createPipe() {
-  const gapHeight = clamp(state.height * 0.32, 170, 230);
+  const gapHeight = isMobileCanvas()
+    ? clamp(state.height * 0.38, 200, 260)
+    : clamp(state.height * 0.32, 170, 230);
   const margin = 72;
   const gapCenter = rand(margin + gapHeight / 2, state.height - margin - gapHeight / 2);
+  const pipeWidth = isMobileCanvas() ? MOBILE_PIPE_WIDTH : DESKTOP_PIPE_WIDTH;
 
   return {
     x: state.width + 18,
-    width: PIPE_WIDTH,
+    width: pipeWidth,
     gapCenter,
     gapHeight,
     scored: false,
@@ -461,6 +484,7 @@ function resizeCanvas() {
 
   state.width = width;
   state.height = height;
+  updatePlayerScale();
   state.player.x = Math.max(96, width * 0.26);
   state.player.y = clamp(yRatio * height, 60, height - 60);
 }
