@@ -31,6 +31,10 @@ body {
   overflow-x: hidden;
 }
 
+body.game-touch-lock {
+  overflow: hidden;
+}
+
 .bg-noise {
   position: fixed;
   inset: 0;
@@ -239,6 +243,11 @@ h2 {
   display: block;
   width: 100%;
   height: clamp(320px, 52vw, 510px);
+  touch-action: none;
+  overscroll-behavior: contain;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .hud-panel {

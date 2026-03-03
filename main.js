@@ -14,37 +14,41 @@ SCAN COMPLETE. 🚽🔥
 #Toiletzilla #FlushTheScam`;
 
 const characterSprite = new Image();
+characterSprite.src = `assets/toiletzilla-character.png?t=${Date.now()}`;
 let characterSpriteReady = false;
 
 characterSprite.onload = () => {
   characterSpriteReady = true;
 };
+
 characterSprite.onerror = () => {
   characterSpriteReady = false;
 };
-characterSprite.src = `assets/toiletzilla-character.png?t=${Date.now()}`;
+
+const GAME_BASE_SPEED = 220;
+const SPAWN_BASE_MS = 1450;
+const PIPE_WIDTH = 88;
 
 const state = {
   score: 0,
   speed: 1,
-  misses: 0,
   running: true,
   width: 0,
   height: 0,
-  items: [],
+  pipes: [],
   spawnTimerMs: 0,
   lastFrameTime: 0,
+  touchingCanvas: false,
   player: {
     x: 0,
     y: 0,
-    hitWidth: 108,
-    hitHeight: 54,
-    spriteWidth: 176,
-    spriteHeight: 176,
-    keyboardSpeed: 620,
-    moveLeft: false,
-    moveRight: false,
-    pointerTarget: null,
+    vy: 0,
+    gravity: 1300,
+    flapImpulse: -430,
+    hitWidth: 82,
+    hitHeight: 62,
+    spriteWidth: 150,
+    spriteHeight: 150,
   },
 };
 
@@ -61,23 +65,31 @@ function updateHud() {
   speedValueEl.textContent = `${state.speed.toFixed(1)}x`;
 }
 
-function setPlayerStart() {
-  state.player.x = state.width / 2;
-  state.player.y = state.height - state.player.hitHeight / 2 - 8;
+function updateSpeed() {
+  state.speed = Math.min(1 + state.score * 0.06, 4.8);
+}
+
+function playerBounds() {
+  return {
+    left: state.player.x - state.player.hitWidth / 2,
+    right: state.player.x + state.player.hitWidth / 2,
+    top: state.player.y - state.player.hitHeight / 2,
+    bottom: state.player.y + state.player.hitHeight / 2,
+  };
 }
 
 function resetGame() {
   state.score = 0;
   state.speed = 1;
-  state.misses = 0;
-  state.items = [];
+  state.running = true;
+  state.pipes = [];
   state.spawnTimerMs = 0;
   state.lastFrameTime = 0;
-  state.running = true;
-  state.player.moveLeft = false;
-  state.player.moveRight = false;
-  state.player.pointerTarget = null;
-  setPlayerStart();
+
+  state.player.x = Math.max(96, state.width * 0.26);
+  state.player.y = state.height * 0.5;
+  state.player.vy = 0;
+
   overlayEl.classList.add("hidden");
   updateHud();
 }
@@ -91,29 +103,66 @@ function gameOver() {
   overlayEl.classList.remove("hidden");
 }
 
-function createItem() {
-  const radius = rand(14, 23);
-  const type = Math.random() < 0.72 ? "scam" : "safe";
-  const velocity = type === "scam" ? rand(92, 145) : rand(102, 162);
+function flap() {
+  if (!state.running) {
+    return;
+  }
+  state.player.vy = state.player.flapImpulse;
+}
 
+function makeCandleMeta() {
   return {
-    x: rand(radius + 8, Math.max(radius + 10, state.width - radius - 8)),
-    y: -radius - 6,
-    radius,
-    type,
-    vy: velocity,
-    phase: rand(0, Math.PI * 2),
-    wobble: rand(10, 24),
+    bullish: Math.random() < 0.5,
+    wickOffset: rand(0.35, 0.65),
+    bodyWidthRatio: rand(0.5, 0.72),
+    openRatio: rand(0.22, 0.78),
+    moveRatio: rand(0.12, 0.3),
   };
 }
 
-function spawnItem() {
-  state.items.push(createItem());
+function createPipe() {
+  const gapHeight = clamp(state.height * 0.32, 170, 230);
+  const margin = 72;
+  const gapCenter = rand(margin + gapHeight / 2, state.height - margin - gapHeight / 2);
+
+  return {
+    x: state.width + 18,
+    width: PIPE_WIDTH,
+    gapCenter,
+    gapHeight,
+    scored: false,
+    topCandle: makeCandleMeta(),
+    bottomCandle: makeCandleMeta(),
+  };
 }
 
-function updateSpeed() {
-  const next = 1 + state.score * 0.08;
-  state.speed = Math.min(next, 4.6);
+function spawnPipe() {
+  state.pipes.push(createPipe());
+}
+
+function aabbIntersects(a, b) {
+  return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+}
+
+function pipeHitsPlayer(pipe, player) {
+  const gapTop = pipe.gapCenter - pipe.gapHeight / 2;
+  const gapBottom = pipe.gapCenter + pipe.gapHeight / 2;
+
+  const topPipe = {
+    left: pipe.x,
+    right: pipe.x + pipe.width,
+    top: 0,
+    bottom: gapTop,
+  };
+
+  const bottomPipe = {
+    left: pipe.x,
+    right: pipe.x + pipe.width,
+    top: gapBottom,
+    bottom: state.height,
+  };
+
+  return aabbIntersects(player, topPipe) || aabbIntersects(player, bottomPipe);
 }
 
 function roundedRectPath(x, y, width, height, radius) {
@@ -134,7 +183,7 @@ function drawBackdrop() {
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, state.width, state.height);
 
-  ctx.globalAlpha = 0.12;
+  ctx.globalAlpha = 0.1;
   ctx.strokeStyle = "#2a2a2a";
   ctx.lineWidth = 1;
   for (let y = 0; y < state.height; y += 24) {
@@ -146,41 +195,76 @@ function drawBackdrop() {
   ctx.globalAlpha = 1;
 }
 
-function drawItem(item) {
-  const isScam = item.type === "scam";
-  const color = isScam ? "#ff4b1f" : "#37ff7a";
-  const glow = isScam ? "rgba(255,75,31,0.45)" : "rgba(55,255,122,0.42)";
+function drawCandleSegment(x, y, width, height, candle) {
+  if (height < 8) {
+    return;
+  }
+
+  const color = candle.bullish ? "#37ff7a" : "#ff4b1f";
+  const glow = candle.bullish ? "rgba(55,255,122,0.34)" : "rgba(255,75,31,0.34)";
+
+  const wickX = x + width * candle.wickOffset;
+  const segmentTop = y + 3;
+  const segmentBottom = y + height - 3;
+
+  const openY = y + height * candle.openRatio;
+  let closeY = candle.bullish ? openY - height * candle.moveRatio : openY + height * candle.moveRatio;
+  closeY = clamp(closeY, segmentTop + 6, segmentBottom - 6);
+
+  const bodyTop = Math.min(openY, closeY);
+  const bodyBottom = Math.max(openY, closeY);
+  const bodyHeight = Math.max(8, bodyBottom - bodyTop);
+  const bodyWidth = Math.max(16, width * candle.bodyWidthRatio);
+  const bodyX = wickX - bodyWidth / 2;
 
   ctx.save();
   ctx.shadowColor = glow;
-  ctx.shadowBlur = 18;
+  ctx.shadowBlur = 14;
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+  ctx.moveTo(wickX, segmentTop);
+  ctx.lineTo(wickX, segmentBottom);
+  ctx.stroke();
+
   ctx.fillStyle = color;
+  roundedRectPath(bodyX, bodyTop, bodyWidth, bodyHeight, 6);
   ctx.fill();
 
   ctx.shadowBlur = 0;
-  ctx.lineWidth = 2;
   ctx.strokeStyle = "#0b0b0b";
+  ctx.lineWidth = 2;
+  roundedRectPath(bodyX, bodyTop, bodyWidth, bodyHeight, 6);
   ctx.stroke();
+  ctx.restore();
+}
 
-  ctx.fillStyle = "#0b0b0b";
-  ctx.font = "700 10px Space Grotesk, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(isScam ? "SCAM" : "SAFE", item.x, item.y);
+function drawPipe(pipe) {
+  const gapTop = pipe.gapCenter - pipe.gapHeight / 2;
+  const gapBottom = pipe.gapCenter + pipe.gapHeight / 2;
+
+  drawCandleSegment(pipe.x, 0, pipe.width, gapTop, pipe.topCandle);
+  drawCandleSegment(pipe.x, gapBottom, pipe.width, state.height - gapBottom, pipe.bottomCandle);
+
+  ctx.save();
+  ctx.globalAlpha = 0.34;
+  ctx.fillStyle = "#f2f2f2";
+  ctx.fillRect(pipe.x - 4, gapTop - 2, pipe.width + 8, 4);
+  ctx.fillRect(pipe.x - 4, gapBottom - 2, pipe.width + 8, 4);
   ctx.restore();
 }
 
 function drawPlayerFallback() {
-  const { x, y, hitWidth, hitHeight } = state.player;
-  const left = x - hitWidth / 2;
-  const top = y - hitHeight / 2;
+  const x = state.player.x;
+  const y = state.player.y;
+  const w = state.player.hitWidth;
+  const h = state.player.hitHeight;
 
   ctx.save();
   ctx.shadowColor = "rgba(55,255,122,0.45)";
-  ctx.shadowBlur = 22;
-  roundedRectPath(left, top, hitWidth, hitHeight, 13);
+  ctx.shadowBlur = 20;
+  roundedRectPath(x - w / 2, y - h / 2, w, h, 13);
   ctx.fillStyle = "#101010";
   ctx.fill();
 
@@ -189,7 +273,7 @@ function drawPlayerFallback() {
   ctx.strokeStyle = "#37ff7a";
   ctx.stroke();
 
-  roundedRectPath(left + 8, top + 7, hitWidth - 16, 6, 3);
+  roundedRectPath(x - w / 2 + 8, y - h / 2 + 7, w - 16, 6, 3);
   ctx.fillStyle = "#ff4b1f";
   ctx.fill();
 
@@ -202,75 +286,75 @@ function drawPlayerFallback() {
 }
 
 function drawPlayer() {
-  const { x, y, hitWidth, hitHeight, spriteWidth, spriteHeight } = state.player;
-  const groundY = y + hitHeight / 2;
-
   if (!characterSpriteReady) {
     drawPlayerFallback();
     return;
   }
 
-  const drawLeft = x - spriteWidth / 2;
-  const drawTop = groundY - spriteHeight;
+  const angle = clamp(state.player.vy / 700, -0.35, 0.55);
+  const drawW = state.player.spriteWidth;
+  const drawH = state.player.spriteHeight;
 
   ctx.save();
-  ctx.shadowColor = "rgba(55,255,122,0.4)";
-  ctx.shadowBlur = 16;
-  ctx.drawImage(characterSprite, drawLeft, drawTop, spriteWidth, spriteHeight);
-  ctx.restore();
-
-  ctx.save();
-  ctx.globalAlpha = 0.85;
-  ctx.shadowColor = "rgba(55,255,122,0.6)";
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = "#37ff7a";
-  roundedRectPath(x - hitWidth / 2, groundY - 3, hitWidth, 4, 2);
-  ctx.fill();
+  ctx.translate(state.player.x, state.player.y);
+  ctx.rotate(angle);
+  ctx.shadowColor = "rgba(55,255,122,0.42)";
+  ctx.shadowBlur = 14;
+  ctx.drawImage(characterSprite, -drawW / 2, -drawH / 2, drawW, drawH);
   ctx.restore();
 }
 
-function drawMisses() {
+function drawHint() {
+  if (!state.running || state.score > 2) {
+    return;
+  }
+
   ctx.save();
-  ctx.fillStyle = "rgba(255,255,255,0.7)";
-  ctx.font = "600 12px Space Grotesk, sans-serif";
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.fillText(`MISSES: ${state.misses}/3`, 14, 12);
+  ctx.fillStyle = "rgba(255,255,255,0.82)";
+  ctx.font = "700 13px Space Grotesk, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("TAP / SPACE TO FLAP", state.width / 2, 38);
   ctx.restore();
 }
 
-function updatePlayer(deltaSec) {
-  const minX = state.player.hitWidth / 2 + 8;
-  const maxX = state.width - state.player.hitWidth / 2 - 8;
+function updateGame(deltaSec) {
+  state.player.vy += state.player.gravity * deltaSec;
+  state.player.y += state.player.vy * deltaSec;
 
-  if (state.player.pointerTarget !== null) {
-    const diff = state.player.pointerTarget - state.player.x;
-    state.player.x += diff * Math.min(1, deltaSec * 12);
+  const player = playerBounds();
+  if (player.top <= 0 || player.bottom >= state.height) {
+    gameOver();
+    return;
   }
 
-  if (state.player.moveLeft) {
-    state.player.x -= state.player.keyboardSpeed * deltaSec;
+  state.spawnTimerMs += deltaSec * 1000;
+  const spawnEvery = Math.max(780, SPAWN_BASE_MS - state.score * 10);
+  while (state.spawnTimerMs >= spawnEvery) {
+    spawnPipe();
+    state.spawnTimerMs -= spawnEvery;
   }
-  if (state.player.moveRight) {
-    state.player.x += state.player.keyboardSpeed * deltaSec;
+
+  for (let i = state.pipes.length - 1; i >= 0; i -= 1) {
+    const pipe = state.pipes[i];
+    pipe.x -= GAME_BASE_SPEED * state.speed * deltaSec;
+
+    if (!pipe.scored && pipe.x + pipe.width < state.player.x) {
+      pipe.scored = true;
+      state.score += 1;
+      updateSpeed();
+      updateHud();
+    }
+
+    if (pipeHitsPlayer(pipe, player)) {
+      gameOver();
+      return;
+    }
+
+    if (pipe.x + pipe.width < -4) {
+      state.pipes.splice(i, 1);
+    }
   }
-
-  state.player.x = clamp(state.player.x, minX, maxX);
-  state.player.y = state.height - state.player.hitHeight / 2 - 8;
-}
-
-function itemHitsPlayer(item) {
-  const left = state.player.x - state.player.hitWidth / 2;
-  const right = state.player.x + state.player.hitWidth / 2;
-  const top = state.player.y - state.player.hitHeight / 2;
-  const bottom = state.player.y + state.player.hitHeight / 2;
-
-  const closestX = clamp(item.x, left, right);
-  const closestY = clamp(item.y, top, bottom);
-  const dx = item.x - closestX;
-  const dy = item.y - closestY;
-
-  return dx * dx + dy * dy <= item.radius * item.radius;
 }
 
 function tick(timestamp) {
@@ -278,108 +362,87 @@ function tick(timestamp) {
     state.lastFrameTime = timestamp;
   }
 
-  const deltaSec = Math.min((timestamp - state.lastFrameTime) / 1000, 0.034);
+  const deltaSec = Math.min((timestamp - state.lastFrameTime) / 1000, 0.03);
   state.lastFrameTime = timestamp;
 
   drawBackdrop();
 
   if (state.running) {
-    updatePlayer(deltaSec);
+    updateGame(deltaSec);
+  }
 
-    state.spawnTimerMs += deltaSec * 1000;
-    const spawnEveryMs = Math.max(250, 850 - state.score * 18);
-    while (state.spawnTimerMs >= spawnEveryMs) {
-      spawnItem();
-      state.spawnTimerMs -= spawnEveryMs;
-    }
-
-    for (let i = state.items.length - 1; i >= 0; i -= 1) {
-      const item = state.items[i];
-      item.phase += deltaSec * 2;
-      item.x += Math.sin(item.phase) * item.wobble * deltaSec;
-      item.y += item.vy * state.speed * deltaSec;
-
-      if (item.x <= item.radius) {
-        item.x = item.radius;
-      } else if (item.x >= state.width - item.radius) {
-        item.x = state.width - item.radius;
-      }
-
-      if (itemHitsPlayer(item)) {
-        if (item.type === "safe") {
-          state.items.splice(i, 1);
-          gameOver();
-          continue;
-        }
-
-        state.score += 1;
-        updateSpeed();
-        updateHud();
-        state.items.splice(i, 1);
-        continue;
-      }
-
-      if (item.y - item.radius > state.height) {
-        if (item.type === "scam") {
-          state.misses += 1;
-          if (state.misses >= 3) {
-            state.items.splice(i, 1);
-            gameOver();
-            continue;
-          }
-        }
-        state.items.splice(i, 1);
-        continue;
-      }
-
-      drawItem(item);
-    }
-  } else {
-    for (const item of state.items) {
-      drawItem(item);
-    }
+  for (const pipe of state.pipes) {
+    drawPipe(pipe);
   }
 
   drawPlayer();
-  drawMisses();
+  drawHint();
   requestAnimationFrame(tick);
 }
 
-function onPointerMove(event) {
-  const rect = canvas.getBoundingClientRect();
-  state.player.pointerTarget = clamp(event.clientX - rect.left, 0, state.width);
-}
+function onPointerDown(event) {
+  event.preventDefault();
+  canvas.focus();
+  if (event.pointerType === "touch") {
+    state.touchingCanvas = true;
+    document.body.classList.add("game-touch-lock");
+  }
 
-function onTouchMove(event) {
-  if (!event.touches || event.touches.length === 0) {
+  if (!state.running) {
+    resetGame();
     return;
   }
-  const rect = canvas.getBoundingClientRect();
-  state.player.pointerTarget = clamp(event.touches[0].clientX - rect.left, 0, state.width);
+
+  flap();
+}
+
+function onPointerUp(event) {
+  if (event.pointerType === "touch") {
+    state.touchingCanvas = false;
+    document.body.classList.remove("game-touch-lock");
+  }
+}
+
+function onTouchStart(event) {
+  event.preventDefault();
+  state.touchingCanvas = true;
+  document.body.classList.add("game-touch-lock");
+  canvas.focus();
+
+  if (!state.running) {
+    resetGame();
+    return;
+  }
+
+  flap();
+}
+
+function onTouchEnd() {
+  state.touchingCanvas = false;
+  document.body.classList.remove("game-touch-lock");
+}
+
+function onDocumentTouchMove(event) {
+  if (state.touchingCanvas) {
+    event.preventDefault();
+  }
 }
 
 function onKeyDown(event) {
   const key = event.key.toLowerCase();
-  if (key === "arrowleft" || key === "a") {
-    state.player.moveLeft = true;
+
+  if (key === " " || key === "arrowup" || key === "w") {
     event.preventDefault();
+    if (!state.running) {
+      resetGame();
+      return;
+    }
+    flap();
+    return;
   }
-  if (key === "arrowright" || key === "d") {
-    state.player.moveRight = true;
-    event.preventDefault();
-  }
+
   if ((key === "r" || key === "enter") && !state.running) {
     resetGame();
-  }
-}
-
-function onKeyUp(event) {
-  const key = event.key.toLowerCase();
-  if (key === "arrowleft" || key === "a") {
-    state.player.moveLeft = false;
-  }
-  if (key === "arrowright" || key === "d") {
-    state.player.moveRight = false;
   }
 }
 
@@ -389,8 +452,8 @@ function resizeCanvas() {
   const width = Math.max(320, Math.floor(rect.width));
   const height = Math.max(240, Math.floor(rect.height));
 
-  const previousWidth = state.width;
-  const xRatio = previousWidth > 0 ? state.player.x / previousWidth : 0.5;
+  const prevHeight = state.height;
+  const yRatio = prevHeight > 0 ? state.player.y / prevHeight : 0.5;
 
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
@@ -398,12 +461,8 @@ function resizeCanvas() {
 
   state.width = width;
   state.height = height;
-  state.player.x = clamp(
-    xRatio * width,
-    state.player.hitWidth / 2 + 8,
-    width - state.player.hitWidth / 2 - 8
-  );
-  state.player.y = height - state.player.hitHeight / 2 - 8;
+  state.player.x = Math.max(96, width * 0.26);
+  state.player.y = clamp(yRatio * height, 60, height - 60);
 }
 
 function getNextFlushFriday(now) {
@@ -458,16 +517,24 @@ tweetBtn.addEventListener("click", () => {
   window.open(tweetUrl, "_blank", "noopener,noreferrer");
 });
 
-canvas.addEventListener("mousemove", onPointerMove);
-canvas.addEventListener("touchmove", onTouchMove, { passive: true });
-canvas.addEventListener("mouseleave", () => {
-  state.player.pointerTarget = null;
-});
+if (window.PointerEvent) {
+  canvas.addEventListener("pointerdown", onPointerDown, { passive: false });
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
+} else {
+  canvas.addEventListener("mousedown", onPointerDown, { passive: false });
+  canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+  canvas.addEventListener("touchend", onTouchEnd);
+  canvas.addEventListener("touchcancel", onTouchEnd);
+}
 
+document.addEventListener("touchmove", onDocumentTouchMove, { passive: false });
+document.addEventListener("touchend", onTouchEnd);
+document.addEventListener("touchcancel", onTouchEnd);
 window.addEventListener("keydown", onKeyDown);
-window.addEventListener("keyup", onKeyUp);
 window.addEventListener("resize", resizeCanvas);
 
+canvas.tabIndex = 0;
 resizeCanvas();
 resetGame();
 startFlushCountdown();
